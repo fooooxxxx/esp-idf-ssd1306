@@ -39,10 +39,13 @@
 #define REG_ICASE 0
 #define REG_NOSUB 0 */
 
-void get_and_print_info_task();
+void get_info_from_aida64();
 char *pick_regex(const char *string, const char *pattern);
+void read_buffer_task();
 
 SSD1306_t dev;
+
+static char response[16000] = {0};
 
 void app_main(void)
 {
@@ -218,9 +221,8 @@ void app_main(void)
 		vTaskDelay(40);
 	}
 #endif
-
-	xTaskCreate(&get_and_print_info_task, "get_and_print", 32768, NULL, 5, NULL);
-	// Restart module
+	xTaskCreate(&get_info_from_aida64, "get_info_from_aida64", 32768, NULL, 5, NULL);
+	xTaskCreate(&read_buffer_task, "read_buffer_task", 32768, NULL, 5, NULL);
 	while (true)
 	{
 		vTaskDelay(1);
@@ -228,18 +230,16 @@ void app_main(void)
 	esp_restart();
 }
 
-void get_and_print_info_task()
+void read_buffer_task()
 {
+
+	vTaskDelay(4100 / portTICK_PERIOD_MS);
+	// 清屏
 	ssd1306_clear_screen(&dev, false);
 	while (true)
 	{
 		vTaskDelay(1000 / portTICK_PERIOD_MS);
-
-		static char response[16000] = {0};
-
-		char *url = "http://192.168.2.100:8032";
-		http_rest_with_url(url, response);
-
+		ESP_LOGI(TAG, "当前缓冲区数据:%s", response);
 		char *line1 = (char *)malloc(16 * sizeof(char));
 		char *line2 = (char *)malloc(16 * sizeof(char));
 		char *line3 = (char *)malloc(16 * sizeof(char));
@@ -247,33 +247,39 @@ void get_and_print_info_task()
 		strcpy(line2, "");
 		strcpy(line3, "");
 
-		char *time = pick_regex(response, "--time-- (.*)</span>");
+		//TODO 不支持懒惰匹配
+		char *time = pick_regex(response, "--time-- (.{3,6})\\{\\|}");
+		if (time == NULL)
+		{
+			// 匹配失败，则放弃匹配，等待下次数据传输
+			continue;
+		}
 
 		strcat(line1, time);
 		strcat(line1, " ");
-		printf("拼接情况：%s,长度:%d", line1, strlen(line1));
+		ESP_LOGI(TAG, "拼接情况：%s,长度:%d", line1, strlen(line1));
 		ssd1306_clear_line(&dev, 0, false);
 		ssd1306_display_text(&dev, 0, line1, strlen(line1), false);
 
-		char *cpu_usage = pick_regex(response, "--cpu_usage-- (.*)</span>");
-		char *cpu_temp = pick_regex(response, "--cpu_package_temp-- (.*)</span>");
+		char *cpu_usage = pick_regex(response, "--cpu_usage-- (.{2,4})\\{\\|}");
+		char *cpu_temp = pick_regex(response, "--cpu_package_temp-- (.{2,6})\\{\\|}");
 		strcat(line2, "CPU:");
 		strcat(line2, cpu_usage);
 		strcat(line2, " ");
 		strcat(line2, cpu_temp);
 
-		printf("拼接情况：%s,长度:%d", line2, strlen(line2));
+		ESP_LOGI(TAG, "拼接情况：%s,长度:%d", line2, strlen(line2));
 		ssd1306_clear_line(&dev, 1, false);
 		ssd1306_display_text(&dev, 1, line2, strlen(line2), false);
 
-		char *gpu_usage = pick_regex(response, "--gpu_usage-- (.*)</span>");
-		char *gpu_temp = pick_regex(response, "--gpu_temp-- (.*)</span>");
+		char *gpu_usage = pick_regex(response, "--gpu_usage-- (.{2,4})\\{\\|}");
+		char *gpu_temp = pick_regex(response, "--gpu_temp-- (.{2,6})\\{\\|}");
 		strcat(line3, "GPU:");
 		strcat(line3, gpu_usage);
 		strcat(line3, " ");
 		strcat(line3, gpu_temp);
 
-		printf("拼接情况：%s,长度:%d", line3, strlen(line3));
+		ESP_LOGI(TAG, "拼接情况：%s,长度:%d", line3, strlen(line3));
 		ssd1306_clear_line(&dev, 2, false);
 		ssd1306_display_text(&dev, 2, line3, strlen(line3), false);
 
@@ -285,11 +291,20 @@ void get_and_print_info_task()
 		free(cpu_temp);
 		free(gpu_usage);
 		free(gpu_temp);
+	}
+}
 
-		vTaskDelay(1500 / portTICK_PERIOD_MS);
+void get_info_from_aida64()
+{
 
-		// ESP_LOG_BUFFER_HEX(TAG, response, strlen(response));
-		// free(response);
+	static char *url = CONFIG_AIDA64_REMOTE_SSE_URL;
+
+	while (true)
+	{
+		vTaskDelay(100 / portTICK_PERIOD_MS);
+		http_sse_with_url(url, response);
+		// 自动重连
+		vTaskDelay(3000 / portTICK_PERIOD_MS);
 	}
 }
 
@@ -298,31 +313,31 @@ char *pick_regex(const char *string, const char *pattern)
 	int err;
 	char errbuf[1024];
 	regex_t compiled;
-	if ((err = regcomp(&compiled, pattern, REG_EXTENDED | REG_ICASE | REG_NEWLINE)) != 0)
+	if ((err = regcomp(&compiled, pattern, REG_EXTENDED | REG_ICASE)) != 0)
 	{
 		regerror(err, &compiled, errbuf, sizeof(errbuf));
-		printf("err:%s\n", errbuf);
+		ESP_LOGW(TAG, "err:%s\n", errbuf);
 		return NULL;
 	}
-
 	regmatch_t pmatch[2];
 	err = regexec(&compiled, string, 2, pmatch, REG_NOTBOL);
 	if (err != 0)
 	{
-		printf("未匹配成功！\n");
+		ESP_LOGW(TAG, "未匹配成功\n");
 		return NULL;
 	}
-	if (compiled.re_nsub != 1)
+	if (compiled.re_nsub != 1 && pmatch[1].rm_so == -1)
+	{
+		ESP_LOGW(TAG, "匹配成功，但是捕获失败!\n");
 		return NULL;
-	if (pmatch[1].rm_so == -1)
-		return NULL;
-
+	}
 	int len = pmatch[1].rm_eo - pmatch[1].rm_so;
 	char *value = (char *)malloc(len + 1);
 	if (value == NULL)
 		return NULL;
 	memset(value, 0, len + 1);
 	memcpy(value, string + pmatch[1].rm_so, len);
+	ESP_LOGI(TAG, "匹配并且捕获成功,捕获字符串:%s", value);
 	//free(value);
 	regfree(&compiled); //切记最后要释放掉，否则会造成内存泄露
 

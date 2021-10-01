@@ -58,6 +58,7 @@ esp_err_t _http_event_handler(esp_http_client_event_t *evt)
              */
         if (!esp_http_client_is_chunked_response(evt->client))
         {
+            ESP_LOGD(TAG, "HTTP_EVNET_ON_DATA,接收到数据=%s", (char *)evt->data);
             // If user_data buffer is configured, copy the response into the buffer
             if (evt->user_data)
             {
@@ -78,6 +79,18 @@ esp_err_t _http_event_handler(esp_http_client_event_t *evt)
                 memcpy(output_buffer + output_len, evt->data, evt->data_len);
             }
             output_len += evt->data_len;
+        }
+        else
+        {
+            if (evt->data && evt->user_data)
+            {
+                ESP_LOGI(TAG, "指定了数据缓冲区，开始接收数据");
+                memcpy(evt->user_data, evt->data, evt->data_len);
+            }
+            else
+            {
+                ESP_LOGW(TAG, "没有指定数据接收缓冲区");
+            }
         }
 
         break;
@@ -125,6 +138,8 @@ esp_http_client_handle_t get_singleton_client(char *url, char *response_buffer)
             .event_handler = _http_event_handler,
             .user_data = response_buffer, // Pass address of local buffer to get response
             .disable_auto_redirect = true,
+            .timeout_ms = 3000,
+            .keep_alive_enable = true,
         };
         singleton_client = esp_http_client_init(&config);
     }
@@ -139,15 +154,28 @@ void http_sse_with_url(char *url, char *local_response_buffer)
     // 重新设置url
     esp_http_client_set_url(client, url);
     esp_http_client_set_method(client, HTTP_METHOD_GET);
-    // 设置为SSE
-    esp_http_client_set_header(client, "Content-Type", "text/event-stream");
+    // Header设置
+    esp_http_client_set_header(client, "Connection", "keep-alive");
+    esp_http_client_set_header(client, "Cache-Control", "no-cache");
+    esp_http_client_set_header(client, "Accept", "text/event-stream");
 
-    if ((err = esp_http_client_open(client, 0)) != ESP_OK)
+    if ((err = esp_http_client_perform(client)) != ESP_OK)
     {
         ESP_LOGE(TAG, "Failed to open HTTP connection: %s", esp_err_to_name(err));
         return;
     }
-    // TODO 继续参照steram read
+
+    ESP_LOGI(TAG, "正在获取SSE数据");
+    int content_length = esp_http_client_fetch_headers(client);
+    int status_code = esp_http_client_get_status_code(client);
+
+    ESP_LOGI(TAG, "读取到的内容长度为%d,状态码为%d", content_length, status_code);
+
+    while (true)
+    {
+        vTaskDelay(2);
+    }
+    // int read_len = esp_http_client_read(client, local_response_buffer, content_length);
 }
 
 void http_rest_with_url(char *url, char *local_response_buffer)
@@ -164,6 +192,8 @@ void http_rest_with_url(char *url, char *local_response_buffer)
 
     esp_http_client_handle_t client = get_singleton_client(url, local_response_buffer);
     // GET
+
+    esp_http_client_set_header(client, "Cache-Control", "no-cache");
     esp_err_t err = esp_http_client_perform(client);
     if (err == ESP_OK)
     {
@@ -177,7 +207,15 @@ void http_rest_with_url(char *url, char *local_response_buffer)
     }
     // ESP_LOG_BUFFER_HEX(TAG, local_response_buffer, strlen(local_response_buffer));
     esp_http_client_close(client);
-    // esp_http_client_cleanup(client);
+    esp_http_client_cleanup(client);
+    // singleton_client = NULL;
+}
+
+void http_force_close_client()
+{
+    esp_http_client_close(singleton_client);
+    esp_http_client_cleanup(singleton_client);
+    singleton_client = NULL;
 }
 
 static void http_rest_with_hostname_path(void)
@@ -726,50 +764,3 @@ static void http_partial_download(void)
     }
     esp_http_client_cleanup(client);
 }
-
-/* static void http_test_task(void *pvParameters)
-{
-    // http_rest_with_url();
-    http_rest_with_hostname_path();
-#if CONFIG_ESP_HTTP_CLIENT_ENABLE_BASIC_AUTH
-    http_auth_basic();
-    http_auth_basic_redirect();
-#endif
-    http_auth_digest();
-    http_relative_redirect();
-    http_absolute_redirect();
-    https_with_url();
-    https_with_hostname_path();
-    http_redirect_to_https();
-    http_download_chunk();
-    http_perform_as_stream_reader();
-    https_async();
-    https_with_invalid_url();
-    http_native_request();
-    http_partial_download();
-
-    ESP_LOGI(TAG, "Finish http example");
-    vTaskDelete(NULL);
-} */
-
-// void app_main(void)
-// {
-//     esp_err_t ret = nvs_flash_init();
-//     if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND)
-//     {
-//         ESP_ERROR_CHECK(nvs_flash_erase());
-//         ret = nvs_flash_init();
-//     }
-//     ESP_ERROR_CHECK(ret);
-//     ESP_ERROR_CHECK(esp_netif_init());
-//     ESP_ERROR_CHECK(esp_event_loop_create_default());
-
-//     /* This helper function configures Wi-Fi or Ethernet, as selected in menuconfig.
-//      * Read "Establishing Wi-Fi or Ethernet Connection" section in
-//      * examples/protocols/README.md for more information about this function.
-//      */
-//     ESP_ERROR_CHECK(example_connect());
-//     ESP_LOGI(TAG, "Connected to AP, begin http example");
-
-//     xTaskCreate(&http_test_task, "http_test_task", 8192, NULL, 5, NULL);
-// }

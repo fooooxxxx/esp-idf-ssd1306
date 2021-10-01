@@ -146,3 +146,11 @@ menu "WiFi Configuration"
 		help
 		Set the Maximum retry to avoid station reconnecting to the AP unlimited when the AP is really inexistent.
 endmenu
+
+menu "Aida64 Configuration"
+	config AIDA64_REMOTE_SSE_URL
+		string "aida64 remote sensor"
+		default "http://ip:port/sse"
+		help
+		url of aida64 remote sensor
+endmenu
